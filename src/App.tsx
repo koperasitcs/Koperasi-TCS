@@ -388,7 +388,16 @@ export default function App() {
           throw new Error(resData.message || "Ralat semasa menyimpan rekod pengesahan.");
         }
       } else {
-        throw new Error("Gagal menghubungi pelayan untuk rekod pengesahan.");
+        let errorMsg = "Gagal menghubungi pelayan untuk rekod pengesahan.";
+        try {
+          const errData = await response.json();
+          if (errData && errData.message) {
+            errorMsg = `Ralat Pelayan: ${errData.message}`;
+          }
+        } catch (_) {
+          errorMsg = `Gagal menyimpan rekod pengesahan pelayan. Status Ralat: ${response.status} (${response.statusText})`;
+        }
+        throw new Error(errorMsg);
       }
 
     } catch (err: any) {
