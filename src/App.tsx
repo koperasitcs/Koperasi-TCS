@@ -252,7 +252,7 @@ export default function App() {
       // Fetch / Embedded Image for reliable PDF rendering
       let logoData: string | HTMLImageElement | null = null;
       try {
-        const logoResponse = await fetch("https://lh3.googleusercontent.com/d/1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro");
+        const logoResponse = await fetch("https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png");
         if (logoResponse.ok) {
           const blob = await logoResponse.blob();
           logoData = await new Promise<string>((resolve, reject) => {
@@ -274,9 +274,9 @@ export default function App() {
         try {
           if (typeof logoData === "string") {
             const format = logoData.includes("image/jpeg") || logoData.includes("image/jpg") ? "JPEG" : "PNG";
-            doc.addImage(logoData, format, 90, 15, 30, 30);
+            doc.addImage(logoData, format, 92.5, 14, 25, 32);
           } else {
-            doc.addImage(logoData, "PNG", 90, 15, 30, 30);
+            doc.addImage(logoData, "PNG", 92.5, 14, 25, 32);
           }
         } catch (err) {
           console.error("Failed to add logo image to PDF:", err);
@@ -519,7 +519,7 @@ export default function App() {
       // Fetch / Embedded Image for reliable PDF rendering
       let logoData: string | HTMLImageElement | null = null;
       try {
-        const logoResponse = await fetch("https://lh3.googleusercontent.com/d/1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro");
+        const logoResponse = await fetch("https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png");
         if (logoResponse.ok) {
           const blob = await logoResponse.blob();
           logoData = await new Promise<string>((resolve, reject) => {
@@ -541,9 +541,9 @@ export default function App() {
         try {
           if (typeof logoData === "string") {
             const format = logoData.includes("image/jpeg") || logoData.includes("image/jpg") ? "JPEG" : "PNG";
-            doc.addImage(logoData, format, 90, 15, 30, 30);
+            doc.addImage(logoData, format, 92.5, 14, 25, 32);
           } else {
-            doc.addImage(logoData, "PNG", 90, 15, 30, 30);
+            doc.addImage(logoData, "PNG", 92.5, 14, 25, 32);
           }
         } catch (err) {
           console.error("Failed to add logo image to PDF:", err);
@@ -771,12 +771,12 @@ export default function App() {
           <div className="flex items-center gap-3 md:gap-4">
             <div className="relative w-[48px] h-[48px] md:w-[60px] md:h-[60px] flex items-center justify-center select-none overflow-hidden shrink-0">
               <img 
-                src="https://lh3.googleusercontent.com/d/1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro" 
+                src="https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png" 
                 alt="Logo Koperasi" 
                 className="w-full h-full object-contain" 
                 referrerPolicy="no-referrer"
                 onError={(e) => {
-                  e.currentTarget.src = "https://drive.google.com/thumbnail?id=1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro&sz=w256";
+                  e.currentTarget.src = "https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png";
                 }}
               />
             </div>
@@ -1105,12 +1105,12 @@ export default function App() {
                     {/* Symmetrical logo block */}
                     <div className="relative w-20 h-20 flex items-center justify-center mb-4 overflow-hidden">
                       <img 
-                        src="https://lh3.googleusercontent.com/d/1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro" 
+                        src="https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png" 
                         alt="Logo Koperasi" 
                         className="w-full h-full object-contain" 
                         referrerPolicy="no-referrer"
                         onError={(e) => {
-                          e.currentTarget.src = "https://drive.google.com/thumbnail?id=1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro&sz=w256";
+                          e.currentTarget.src = "https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png";
                         }}
                       />
                     </div>
@@ -1279,13 +1279,13 @@ export default function App() {
                         <div className="relative w-24 h-24 flex items-center justify-center select-none overflow-hidden">
                           <img 
                             id="koperasi-logo"
-                            src="https://lh3.googleusercontent.com/d/1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro" 
+                            src="https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png" 
                             alt="Logo Koperasi" 
                             crossOrigin="anonymous"
                             className="w-full h-full object-contain" 
                             referrerPolicy="no-referrer"
                             onError={(e) => {
-                              e.currentTarget.src = "https://drive.google.com/thumbnail?id=1_Go-PDmWb4Ti_VObI52YW7t4yIsQMSro&sz=w256";
+                              e.currentTarget.src = "https://i.postimg.cc/kDP75HR2/LOGO-SEDANG.png";
                             }}
                           />
                         </div>
