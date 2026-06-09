@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Checking if ID has valid format
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+    
+    function incoming() { 
+      return request.resource.data; 
+    }
+    
+    // Strict schema and field verification to ensure only valid data is stored
+    function isValidConfirmation(data, pathIc) {
+      return data.keys().hasAll(['fullName', 'icNumber', 'shares', 'fees', 'currentYearFees', 'totalAccumulated', 'confirmationDate'])
+        && data.keys().size() == 7
+        && data.fullName is string
+        && data.fullName.size() > 0
+        && data.fullName.size() <= 200
+        && data.icNumber is string
+        && data.icNumber == pathIc
+        && data.shares is number
+        && data.fees is number
+        && data.currentYearFees is number
+        && data.totalAccumulated is number
+        && data.confirmationDate is string
+        && data.confirmationDate.size() > 0
+        && data.confirmationDate.size() <= 100;
+    }
+
+    match /confirmations/{icNumber} {
+      allow get: if isValidId(icNumber);
+      allow list: if true;
+      allow create, update: if isValidId(icNumber) && isValidConfirmation(incoming(), icNumber);
+      allow delete: if isValidId(icNumber);
+    }
+  }
+}

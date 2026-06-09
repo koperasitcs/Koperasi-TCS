@@ -1,0 +1,46 @@
+{
+  "entities": {
+    "Confirmation": {
+      "title": "Confirmation",
+      "description": "Rekod pengesahan ahli koperasi untuk tahun 2026",
+      "type": "object",
+      "properties": {
+        "fullName": {
+          "type": "string",
+          "description": "Nama penuh ahli"
+        },
+        "icNumber": {
+          "type": "string",
+          "description": "No. Kad Pengenalan ahli (tanpa sempang)"
+        },
+        "shares": {
+          "type": "number",
+          "description": "Modal Saham"
+        },
+        "fees": {
+          "type": "number",
+          "description": "Yuran Masuk/Yuran Kebajikan"
+        },
+        "currentYearFees": {
+          "type": "number",
+          "description": "Yuran Bulanan Terkumpul"
+        },
+        "totalAccumulated": {
+          "type": "number",
+          "description": "Jumlah Bayaran Terkumpul"
+        },
+        "confirmationDate": {
+          "type": "string",
+          "description": "Tarikh pengesahan ditandatangani"
+        }
+      },
+      "required": ["fullName", "icNumber", "shares", "fees", "currentYearFees", "totalAccumulated", "confirmationDate"]
+    }
+  },
+  "firestore": {
+    "/confirmations/{icNumber}": {
+      "schema": "Confirmation",
+      "description": "Koleksi pengesahan ahli"
+    }
+  }
+}

@@ -24,6 +24,54 @@ import { jsPDF } from "jspdf";
 import { helperMemberPDFData, HelperMemberPDFData } from "./pdfData";
 import { WebMember } from "./types";
 
+// Firebase Integration
+import { initializeApp } from "firebase/app";
+import { 
+  getFirestore, 
+  collection, 
+  doc as firestoreDoc, 
+  setDoc, 
+  getDocs, 
+  deleteDoc, 
+  getDoc 
+} from "firebase/firestore";
+import firebaseConfig from "../firebase-applet-config.json";
+
+// Initialize client-side Firebase
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const CONFIRMATIONS_COLLECTION = "confirmations";
+
+enum OperationType {
+  CREATE = "create",
+  UPDATE = "update",
+  DELETE = "delete",
+  LIST = "list",
+  GET = "get",
+  WRITE = "write",
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {},
+    operationType,
+    path
+  };
+  console.error("Firestore Error: ", JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 export default function App() {
   const [icInput, setIcInput] = useState("");
   const [dbMembers, setDbMembers] = useState<WebMember[]>([]);
@@ -113,32 +161,65 @@ export default function App() {
       console.error("Error reading localStorage confirmations:", e);
     }
 
+    const mergedMap = new Map<string, any>();
+
+    // Step 1: Pre-fill with localStorage records
+    localConf.forEach((c) => {
+      if (c && c.icNumber) {
+        const cleanIc = c.icNumber.replace(/\D/g, "");
+        if (cleanIc) {
+          mergedMap.set(cleanIc, c);
+        }
+      }
+    });
+
+    // Step 2: Merge with Express backend database if accessible
     try {
       const response = await fetch("/api/confirmations");
       if (response.ok) {
         const data = await response.json();
-        if (data.status === "success") {
-          const apiConf = data.confirmations || [];
-          
-          // Merge API and localStorage confirmations, avoiding duplicates based on clean icNumber
-          const merged = [...apiConf];
-          localConf.forEach((lc: any) => {
-            const cleanIcValue = lc.icNumber.replace(/\D/g, "");
-            const exists = merged.some((ac: any) => ac.icNumber.replace(/\D/g, "") === cleanIcValue);
-            if (!exists) {
-              merged.push(lc);
+        if (data && data.status === "success" && Array.isArray(data.confirmations)) {
+          data.confirmations.forEach((item: any) => {
+            if (item && item.icNumber) {
+              const cleanIc = item.icNumber.replace(/\D/g, "");
+              if (cleanIc) {
+                mergedMap.set(cleanIc, item);
+              }
             }
           });
-          setConfirmedList(merged);
-          return;
         }
       }
     } catch (e) {
-      console.warn("Error refreshing confirmations from server, falling back purely to localStorage data:", e);
+      console.warn("Could not load confirmations from Express backend. Using backup flow:", e);
     }
 
-    // Fallback: If fetch fails, is 405/404, or has issues, set from localStorage directly
-    setConfirmedList(localConf);
+    // Step 3: Core Cloud Sync - Retrieve from Firebase Firestore and overwrite with latest cloud state
+    try {
+      const querySnapshot = await getDocs(collection(db, CONFIRMATIONS_COLLECTION));
+      querySnapshot.forEach((document) => {
+        const item = document.data();
+        const icNum = document.id; // doc id is clean icNumber
+        if (item && icNum) {
+          const cleanIc = icNum.replace(/\D/g, "");
+          if (cleanIc) {
+            mergedMap.set(cleanIc, {
+              fullName: item.fullName || "",
+              icNumber: item.icNumber || icNum,
+              shares: item.shares || 0,
+              fees: item.fees || 0,
+              currentYearFees: item.currentYearFees || 0,
+              totalAccumulated: item.totalAccumulated || 0,
+              confirmationDate: item.confirmationDate || ""
+            });
+          }
+        }
+      });
+      console.log("Durable Cloud (Firebase) confirmations synchronized successfully.");
+    } catch (fbErr: any) {
+      console.warn("Could not sync from Firebase (using handleFirestoreError callback):", fbErr);
+    }
+
+    setConfirmedList(Array.from(mergedMap.values()));
   };
 
   // Format IC number as user types: XXXXXX-XX-XXXX
@@ -186,19 +267,38 @@ export default function App() {
       setLoginError(null);
       setShowFinancials(true);
       
-      // Perform lookup in server-side confirmations
       const checkIC = matchedMember.icNumber.replace(/\D/g, "");
-      const matchedConfirmation = confirmedList.find((c: any) => c.icNumber.replace(/\D/g, "") === checkIC);
-      
-      if (matchedConfirmation) {
-        setIsConfirmed(true);
-        setConfirmationDate(matchedConfirmation.confirmationDate);
-        setHasTickedAkuJanji(true);
-      } else {
-        setIsConfirmed(false);
-        setConfirmationDate(null);
-        setHasTickedAkuJanji(false);
-      }
+
+      // Direct check against Cloud Firestore for real-time consistency
+      const checkRealtimeConfirmation = async () => {
+        try {
+          const docRef = firestoreDoc(db, CONFIRMATIONS_COLLECTION, checkIC);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setIsConfirmed(true);
+            setConfirmationDate(data.confirmationDate);
+            setHasTickedAkuJanji(true);
+            return;
+          }
+        } catch (e) {
+          console.warn("Direct Cloud Firestore check failed (falling back to memory list):", e);
+        }
+
+        // Fallback to pre-loaded memory list 
+        const matchedConfirmation = confirmedList.find((c: any) => c.icNumber.replace(/\D/g, "") === checkIC);
+        if (matchedConfirmation) {
+          setIsConfirmed(true);
+          setConfirmationDate(matchedConfirmation.confirmationDate);
+          setHasTickedAkuJanji(true);
+        } else {
+          setIsConfirmed(false);
+          setConfirmationDate(null);
+          setHasTickedAkuJanji(false);
+        }
+      };
+
+      checkRealtimeConfirmation();
     } else {
       setLoginError(
         "Nombor kad pengenalan tidak dijumpai dalam pangkalan data Ahli Koperasi Pegawai-Pegawai Tadbir Negeri Terengganu Berhad. Sila pastikan IC betul atau hubungi urusetia."
@@ -390,7 +490,7 @@ export default function App() {
         return;
       }
 
-      // 3. Save confirmation to Express backend server (with local storage fallback)
+      // 3. Save confirmation with multi-cloud redundancy (Firebase, Express API, local storage fallback)
       const confirmationPayload = {
         fullName: loggedInMember.fullName,
         icNumber: loggedInMember.icNumber,
@@ -401,6 +501,31 @@ export default function App() {
         confirmationDate: formattedDate
       };
 
+      let cloudSaveSucceeded = false;
+
+      // Try Firebase Firestore Cloud Save (Works everywhere - Cloudflare, GitHub Pages, etc.)
+      try {
+        const cleanIcForDb = loggedInMember.icNumber.replace(/\D/g, "");
+        const docRef = firestoreDoc(db, CONFIRMATIONS_COLLECTION, cleanIcForDb);
+        await setDoc(docRef, {
+          fullName: loggedInMember.fullName,
+          icNumber: loggedInMember.icNumber,
+          shares: matchedFinancials.saham,
+          fees: matchedFinancials.yuran,
+          currentYearFees: matchedFinancials.terima,
+          totalAccumulated: matchedFinancials.jumlah,
+          confirmationDate: formattedDate
+        });
+        cloudSaveSucceeded = true;
+        console.log("Firebase Firestore Cloud save succeeded!");
+      } catch (fbErr: any) {
+        console.warn("Firebase Firestore Cloud save bypassed or failed:", fbErr);
+        try {
+          handleFirestoreError(fbErr, OperationType.WRITE, `${CONFIRMATIONS_COLLECTION}/${loggedInMember.icNumber}`);
+        } catch (_) {}
+      }
+
+      // Try Express backend save (Works when custom server is running)
       try {
         const response = await fetch("/api/confirmations", {
           method: "POST",
@@ -412,40 +537,38 @@ export default function App() {
 
         if (response.ok) {
           const resData = await response.json();
-          if (resData.status === "success") {
-            setEmailSuccessMessage("Penyata PDF telah berjaya dimuat turun dan disahkan!");
-            setConfirmationDate(formattedDate);
-            setIsConfirmed(true);
-            await refreshConfirmations();
-            return;
+          if (resData && resData.status === "success") {
+            cloudSaveSucceeded = true;
+            console.log("Express API backend save succeeded!");
           }
         }
-        
-        // Trigger the fallback block directly if status is not 2xx (e.g. 405 Method Not Allowed, 404, etc.)
-        throw new Error(`Server returned status code: ${response.status}`);
       } catch (apiErr: any) {
-        console.warn("Server API failed or not supported in this environment, saving locally in browser storage:", apiErr);
-        
-        try {
-          const savedLocally = localStorage.getItem("koperasi_confirmations_2026");
-          const list = savedLocally ? JSON.parse(savedLocally) : [];
-          
-          // Check if this IC is already logged locally
-          const cleanIcNum = loggedInMember.icNumber.replace(/\D/g, "");
-          const exists = list.some((c: any) => c.icNumber.replace(/\D/g, "") === cleanIcNum);
-          if (!exists) {
-            list.push(confirmationPayload);
-            localStorage.setItem("koperasi_confirmations_2026", JSON.stringify(list));
-          }
-          
-          setEmailSuccessMessage("Penyata PDF telah berjaya dimuat turun dan disahkan secara selamat!");
-          setConfirmationDate(formattedDate);
-          setIsConfirmed(true);
-          await refreshConfirmations();
-        } catch (localErr: any) {
-          throw new Error("Gagal menyimpan rekod pengesahan di pelayan mahupun dalam pelayan laman web: " + localErr.message);
-        }
+        console.warn("Express API backend save bypassed or not supported in this host:", apiErr);
       }
+
+      // Safe LocalStorage fallback (Makes sure progress remains local on current device no matter what)
+      try {
+        const savedLocally = localStorage.getItem("koperasi_confirmations_2026");
+        const list = savedLocally ? JSON.parse(savedLocally) : [];
+        const cleanIcNum = loggedInMember.icNumber.replace(/\D/g, "");
+        const exists = list.some((c: any) => c.icNumber.replace(/\D/g, "") === cleanIcNum);
+        if (!exists) {
+          list.push(confirmationPayload);
+          localStorage.setItem("koperasi_confirmations_2026", JSON.stringify(list));
+        }
+      } catch (localErr: any) {
+        console.error("LocalStorage write failed:", localErr);
+      }
+
+      if (cloudSaveSucceeded) {
+        setEmailSuccessMessage("Penyata PDF telah berjaya dimuat turun dan disahkan secara selamat dalam pangkalan data awan!");
+      } else {
+        setEmailSuccessMessage("Penyata PDF telah berjaya dimuat turun dan disahkan secara selamat pada peranti anda!");
+      }
+
+      setConfirmationDate(formattedDate);
+      setIsConfirmed(true);
+      await refreshConfirmations();
 
     } catch (err: any) {
       console.error("PDF generation or saving failed:", err);
@@ -641,21 +764,35 @@ export default function App() {
   };
 
   const handleDeleteConfirmation = async (ic: string) => {
-    // 1. Double remove from browser's localStorage fallback
+    const cleanIcNum = ic.replace(/\D/g, "");
+
+    // 1. Delete from Cloud Firestore (Primary serverless database)
+    try {
+      const docRef = firestoreDoc(db, CONFIRMATIONS_COLLECTION, cleanIcNum);
+      await deleteDoc(docRef);
+      console.log("Successfully deleted confirmation from Cloud Firestore.");
+    } catch (fbErr: any) {
+      console.warn("Firebase Cloud Firestore delete failed:", fbErr);
+      try {
+        handleFirestoreError(fbErr, OperationType.DELETE, `${CONFIRMATIONS_COLLECTION}/${cleanIcNum}`);
+      } catch (_) {}
+    }
+
+    // 2. Delete from browser's localStorage
     try {
       const savedLocally = localStorage.getItem("koperasi_confirmations_2026");
       if (savedLocally) {
         const list = JSON.parse(savedLocally);
-        const filtered = list.filter((c: any) => c.icNumber.replace(/\D/g, "") !== ic.replace(/\D/g, ""));
+        const filtered = list.filter((c: any) => c.icNumber.replace(/\D/g, "") !== cleanIcNum);
         localStorage.setItem("koperasi_confirmations_2026", JSON.stringify(filtered));
       }
     } catch (e) {
       console.error("Ralat membuang dari penyimpanan tempatan pelayar:", e);
     }
 
-    // 2. Try to remove from the Express backend API
+    // 3. Try to delete from the Express backend API
     try {
-      const response = await fetch(`/api/confirmations/${ic}`, {
+      const response = await fetch(`/api/confirmations/${cleanIcNum}`, {
         method: "DELETE"
       });
       if (response.ok) {
@@ -668,19 +805,15 @@ export default function App() {
           return;
         }
       }
-      
-      // If server failed (e.g. 405 or 404), fallback to successful local removal message
-      setAdminSuccessMsg("Pengesahan ahli berjaya diset semula secara tempatan.");
-      setDeleteConfirmIc(null);
-      await refreshConfirmations();
-      setTimeout(() => setAdminSuccessMsg(null), 4000);
     } catch (err: any) {
-      console.warn("Ralat pelayan semasa pemadaman, data ditetapkan semula secara tempatan sahaja:", err);
-      setAdminSuccessMsg("Pengesahan ahli berjaya diset semula secara tempatan.");
-      setDeleteConfirmIc(null);
-      await refreshConfirmations();
-      setTimeout(() => setAdminSuccessMsg(null), 4000);
+      console.warn("Ralat pelayan Express semasa pemadaman:", err);
     }
+    
+    // Always fallback to standard local reset visual feedback & refresh
+    setAdminSuccessMsg("Pengesahan ahli berjaya diset semula.");
+    setDeleteConfirmIc(null);
+    await refreshConfirmations();
+    setTimeout(() => setAdminSuccessMsg(null), 4000);
   };
 
   // Derived state: Entire member roster with physical/digital confirmation mapping
