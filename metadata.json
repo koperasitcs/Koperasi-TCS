@@ -1,0 +1,12 @@
+{
+  "name": "Remix: Penyata Kedudukan Saham 2026",
+  "description": "Sistem semakan dan pengesahan Penyata Kedudukan Saham 2026 untuk anggota Koperasi Pegawai-Pegawai Tadbir Negeri Terengganu Berhad.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
