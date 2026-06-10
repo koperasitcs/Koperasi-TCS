@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
+import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 
 async function startServer() {
   const app = express();
@@ -13,6 +14,154 @@ async function startServer() {
   const BIN_ID_FILE = path.join(process.cwd(), "jsonbin_id.json");
   const MASTER_KEY = process.env.JSONBIN_MASTER_KEY || "$2a$10$X1exKkrNnD9odupJCg4WTe377IlWpM9JLr4PwRj0lGqOFWEivZOqa";
   let cachedBinId: string | null = null;
+
+  // Cloudflare R2 / S3 Storage client lazy initialization
+  let s3Client: S3Client | null = null;
+  function getS3Client(): S3Client | null {
+    if (s3Client) return s3Client;
+    const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+    const endpoint = process.env.R2_ENDPOINT || "https://f30f579da7e8adde5634a88b4ce28a47.r2.cloudflarestorage.com";
+    
+    if (!accessKeyId || !secretAccessKey) {
+      console.warn("R2: Environment variables R2_ACCESS_KEY_ID or R2_SECRET_ACCESS_KEY are empty. Cloudflare R2 storage syncing is deferred.");
+      return null;
+    }
+
+    try {
+      s3Client = new S3Client({
+        region: "auto",
+        endpoint,
+        credentials: {
+          accessKeyId,
+          secretAccessKey,
+        },
+      });
+      console.log("R2: Successfully initialized Cloudflare R2 Client.");
+      return s3Client;
+    } catch (err: any) {
+      console.error("R2: Failed to instantiate S3 client:", err);
+      return null;
+    }
+  }
+
+  // Pull data array from Cloudflare R2 bucket with fallback
+  async function pullFromR2(key: string): Promise<any[] | null> {
+    const client = getS3Client();
+    if (!client) return null;
+
+    const bucket = process.env.R2_BUCKET || "penyatasaham";
+    try {
+      console.log(`R2: Fetching object '${key}' from bucket '${bucket}'...`);
+      const command = new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      });
+      const response = await client.send(command);
+      const bodyStr = await response.Body?.transformToString();
+      if (bodyStr) {
+        const parsed = JSON.parse(bodyStr);
+        return Array.isArray(parsed) ? parsed : [];
+      }
+    } catch (err: any) {
+      if (err.name === "NoSuchKey" || err.Code === "NoSuchKey") {
+        console.log(`R2: Object Key '${key}' is not found yet in bucket '${bucket}'.`);
+        return [];
+      }
+      console.warn(`R2: Fetch key '${key}' failed on bucket '${bucket}':`, err.message || err);
+    }
+    return null;
+  }
+
+  // Push data array to Cloudflare R2 bucket with fallback
+  async function pushToR2(key: string, data: any[]): Promise<boolean> {
+    const client = getS3Client();
+    if (!client) return false;
+
+    const bucket = process.env.R2_BUCKET || "penyatasaham";
+    try {
+      console.log(`R2: Putting object '${key}' with ${data.length} records into bucket '${bucket}'...`);
+      const command = new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: JSON.stringify(data, null, 2),
+        ContentType: "application/json",
+      });
+      await client.send(command);
+      console.log(`R2: Successfully uploaded key '${key}' to bucket '${bucket}'.`);
+      return true;
+    } catch (err: any) {
+      console.error(`R2: Push key '${key}' failed on bucket '${bucket}':`, err.message || err);
+      return false;
+    }
+  }
+
+  // Dual Cloud Synchronizer on startup
+  async function syncWithR2OnStartup() {
+    console.log("R2: Starting Cloudflare R2 dynamic database synchronization check (Dual Cloud Sync)...");
+    
+    // 1. Sync confirmations.json database
+    try {
+      const r2Conf = await pullFromR2("confirmations.json");
+      if (r2Conf && r2Conf.length > 0) {
+        console.log(`R2: Received ${r2Conf.length} confirmations from R2 cloud. Synchronizing...`);
+        const localConf = getConfirmations();
+        
+        // Merge records (deduplicate by IC number)
+        const mergedMap = new Map();
+        localConf.forEach((c: any) => {
+          if (c && c.icNumber) {
+            const cleanIc = c.icNumber.replace(/\D/g, "");
+            if (cleanIc) mergedMap.set(cleanIc, c);
+          }
+        });
+        r2Conf.forEach((c: any) => {
+          if (c && c.icNumber) {
+            const cleanIc = c.icNumber.replace(/\D/g, "");
+            if (cleanIc) mergedMap.set(cleanIc, c);
+          }
+        });
+
+        const mergedList = Array.from(mergedMap.values());
+        fs.writeFileSync(CONFIRM_FILE, JSON.stringify(mergedList, null, 2), "utf-8");
+        console.log(`R2: Merged local and Cloudflare confirmations database to ${mergedList.length} items.`);
+        
+        // Ensure both cloud storage platforms are fully aligned
+        await pushToR2("confirmations.json", mergedList);
+        await pushToCloud(mergedList);
+      } else {
+        // If R2 is empty, upload our current local integrations (including JSONBin pull matches)
+        const localConf = getConfirmations();
+        if (localConf.length > 0) {
+          console.log(`R2: Populating Cloudflare R2 bucket with ${localConf.length} confirmations...`);
+          await pushToR2("confirmations.json", localConf);
+        }
+      }
+    } catch (err) {
+      console.warn("R2: Startup confirmations cloud synchronisation suspended (awaiting keys or connection):", err);
+    }
+
+    // 2. Sync members.json database
+    try {
+      const membersPath = path.join(process.cwd(), "src", "members.json");
+      const r2Members = await pullFromR2("members.json");
+      if (r2Members && r2Members.length > 0) {
+        console.log(`R2: Received ${r2Members.length} co-op member records from R2 cloud. Syncing local members roster.`);
+        fs.writeFileSync(membersPath, JSON.stringify(r2Members, null, 2), "utf-8");
+      } else {
+        // If R2 has no members.json, push our robust 1450+ pre-filled local co-op roster to seed it!
+        if (fs.existsSync(membersPath)) {
+          const localMembers = JSON.parse(fs.readFileSync(membersPath, "utf-8"));
+          if (localMembers && localMembers.length > 0) {
+            console.log(`R2: Creating & copying entire members roster (${localMembers.length} items) to Cloudflare R2...`);
+            await pushToR2("members.json", localMembers);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("R2: Startup members roster cloud synchronisation suspended:", err);
+    }
+  }
 
   // Load Cached Bin ID if any
   function getCachedBinId(): string | null {
@@ -178,8 +327,15 @@ async function startServer() {
   function saveConfirmations(list: any[]) {
     try {
       fs.writeFileSync(CONFIRM_FILE, JSON.stringify(list, null, 2), "utf-8");
+      
+      // JSONBin background sync
       pushToCloud(list).catch((err) => {
         console.error("JSONBin background push failed:", err);
+      });
+
+      // Cloudflare R2 background sync
+      pushToR2("confirmations.json", list).catch((err) => {
+        console.error("Cloudflare R2 background push failed:", err);
       });
     } catch (e) {
       console.error("Error writing confirmations file", e);
@@ -188,7 +344,7 @@ async function startServer() {
 
   // On startup, pull latest cloud confirmations to sync local file state
   pullFromCloud()
-    .then((cloudRecords) => {
+    .then(async (cloudRecords) => {
       if (cloudRecords && cloudRecords.length > 0) {
         console.log(`JSONBin: Received ${cloudRecords.length} records dynamically. Overwriting local cache.`);
         // Write file quietly without triggering another pushToCloud immediately
@@ -200,9 +356,13 @@ async function startServer() {
       } else {
         console.log("JSONBin: No cloud records found or empty, using existing local files if any.");
       }
+
+      // Now run double-sync with Cloudflare R2 which merges R2 and local/JSONBin data sets in real-time
+      await syncWithR2OnStartup();
     })
-    .catch((err) => {
-      console.warn("JSONBin: Startup pull failed", err);
+    .catch(async (err) => {
+      console.warn("JSONBin: Startup pull failed, proceeding to R2 sync...", err);
+      await syncWithR2OnStartup();
     });
 
   // API Route - Get all confirmations for admin
@@ -308,6 +468,97 @@ async function startServer() {
       res.status(500).json({
         status: "error",
         message: error.message || "Internal server error fetching members"
+      });
+    }
+  });
+
+  // API Route - Manual Trigger Cloudflare R2 Cloud Synchronisation & Verification
+  app.post("/api/admin/sync-r2", async (req, res) => {
+    try {
+      const client = getS3Client();
+      if (!client) {
+        return res.status(400).json({
+          status: "error",
+          message: "Akses Tergendala. Sila masukkan R2_ACCESS_KEY_ID dan R2_SECRET_ACCESS_KEY di portal konfigurasi Settings."
+        });
+      }
+
+      console.log("R2 Admin: Manual cloud sync triggered...");
+      
+      const results: any = {
+        r2Connected: true,
+        confirmationsSynced: 0,
+        membersSynced: 0,
+        pullDetails: "",
+        pushDetails: ""
+      };
+
+      // 1. Synchronize confirmations.json
+      const r2Conf = await pullFromR2("confirmations.json");
+      const localConf = getConfirmations();
+      
+      const mergedMap = new Map();
+      localConf.forEach((c: any) => {
+        if (c && c.icNumber) {
+          const cleanIc = c.icNumber.replace(/\D/g, "");
+          if (cleanIc) mergedMap.set(cleanIc, c);
+        }
+      });
+      if (r2Conf && r2Conf.length > 0) {
+        r2Conf.forEach((c: any) => {
+          if (c && c.icNumber) {
+            const cleanIc = c.icNumber.replace(/\D/g, "");
+            if (cleanIc) mergedMap.set(cleanIc, c);
+          }
+        });
+        results.pullDetails = `Berjaya memuat turun ${r2Conf.length} pengesahan daripada cloud. `;
+      } else {
+        results.pullDetails = `Tiada rekod sedia ada di cloud R2 atau cubaan muat turun kosong. `;
+      }
+
+      const mergedList = Array.from(mergedMap.values());
+      fs.writeFileSync(CONFIRM_FILE, JSON.stringify(mergedList, null, 2), "utf-8");
+      results.confirmationsSynced = mergedList.length;
+
+      // Push back up to R2 & JSONBin
+      const pushSuccess = await pushToR2("confirmations.json", mergedList);
+      if (pushSuccess) {
+        results.pushDetails += `Berjaya memuat naik ${mergedList.length} pengesahan ke Cloudflare R2. `;
+      }
+      await pushToCloud(mergedList);
+
+      // 2. Synchronize members.json
+      const membersPath = path.join(process.cwd(), "src", "members.json");
+      const r2Members = await pullFromR2("members.json");
+      
+      if (r2Members && r2Members.length > 0) {
+        fs.writeFileSync(membersPath, JSON.stringify(r2Members, null, 2), "utf-8");
+        results.membersSynced = r2Members.length;
+        results.pullDetails += `Berjaya memuat turun senarai ${r2Members.length} ahli daripada cloud.`;
+      } else {
+        // Seed
+        if (fs.existsSync(membersPath)) {
+          const localMembers = JSON.parse(fs.readFileSync(membersPath, "utf-8"));
+          if (localMembers && localMembers.length > 0) {
+            const seedSuccess = await pushToR2("members.json", localMembers);
+            if (seedSuccess) {
+              results.membersSynced = localMembers.length;
+              results.pushDetails += `Berjaya memuat naik senarai ${localMembers.length} ahli ke cloud R2 sebagai fail permulaan (seeding).`;
+            }
+          }
+        }
+      }
+
+      res.json({
+        status: "success",
+        message: "Sinkronisasi Cloudflare R2 selesai dengan jaya!",
+        details: results
+      });
+    } catch (error: any) {
+      console.error("Error in /api/admin/sync-r2:", error);
+      res.status(500).json({
+        status: "error",
+        message: error.message || "Gagal melakukan koordinasi cloud R2."
       });
     }
   });

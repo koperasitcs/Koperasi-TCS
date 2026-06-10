@@ -18,7 +18,8 @@ import {
   Search,
   AlertTriangle,
   ShieldCheck,
-  Download
+  Download,
+  RefreshCw
 } from "lucide-react";
 import { jsPDF } from "jspdf";
 import { helperMemberPDFData, HelperMemberPDFData } from "./pdfData";
@@ -220,6 +221,50 @@ export default function App() {
     }
 
     setConfirmedList(Array.from(mergedMap.values()));
+  };
+
+  // Cloudflare R2 backup coordination states
+  const [isR2Syncing, setIsR2Syncing] = useState(false);
+  const [r2SyncResult, setR2SyncResult] = useState<any | null>(null);
+
+  const handleR2ManualSync = async () => {
+    try {
+      setIsR2Syncing(true);
+      setAdminError(null);
+      setAdminSuccessMsg(null);
+      
+      const response = await fetch("/api/admin/sync-r2", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await response.json();
+      if (response.ok && data.status === "success") {
+        setR2SyncResult(data.details);
+        setAdminSuccessMsg("Sistem telah berjaya menyelaraskan dan membackup keseluruhan database ke Cloudflare R2.");
+        // Refresh confirmations as well since they may have been updated/merged
+        await refreshConfirmations();
+        // Also fetch members list just in case
+        const membersRes = await fetch("/api/members");
+        if (membersRes.ok) {
+          const membersData = await membersRes.json();
+          if (membersData.status === "success") {
+            const mapped = membersData.members.map((m: any) => ({
+              memberNo: m["No. Ahli"] || "",
+              fullName: m["Nama Penuh"] || "",
+              icNumber: m["No. Kad Pengenalan"] || ""
+            }));
+            setDbMembers(mapped);
+          }
+        }
+      } else {
+        throw new Error(data.message || "Gagal menyelaraskan pengkalan data.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setAdminError(err.message || "Kesalahan berlaku semasa menyambung ke Cloudflare R2.");
+    } finally {
+      setIsR2Syncing(false);
+    }
   };
 
   // Format IC number as user types: XXXXXX-XX-XXXX
@@ -1017,6 +1062,73 @@ export default function App() {
                       Belum Melakukan Sah Digital
                     </span>
                   </div>
+                </div>
+
+                {/* Cloudflare R2 Database Synchronization & Backup Panel */}
+                <div className="bg-stone-50 border-2 border-black p-6 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] space-y-4">
+                  <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse inline-block"></span>
+                        <h3 className="text-sm font-black uppercase tracking-wider text-black">
+                          SINKRONISASI CLOUDFLARE R2
+                        </h3>
+                      </div>
+                      <p className="text-[11px] text-stone-600 font-medium max-w-xl mt-1">
+                        Sistem ini dikoordinasikan secara langsung ke storan awan Cloudflare R2 untuk sandaran (backup) roster ahli (<span className="font-mono text-[10px]">members.json</span>) dan pengesahan sah digital (<span className="font-mono text-[10px]">confirmations.json</span>).
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isR2Syncing}
+                      onClick={handleR2ManualSync}
+                      className={`w-full md:w-auto font-black text-xs uppercase tracking-wider py-2.5 px-6 border-2 border-black select-none cursor-pointer transition-all duration-200 shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-x-0.5 active:translate-y-0.5 inline-flex items-center justify-center gap-2 ${
+                        isR2Syncing
+                          ? "bg-stone-100 text-stone-400 cursor-not-allowed border-stone-300 shadow-none transform-none"
+                          : "bg-stone-900 hover:bg-black text-white hover:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
+                      }`}
+                    >
+                      {isR2Syncing ? (
+                        <>
+                          <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-t-transparent border-stone-500 rounded-full"></span>
+                          <span>Menyelaras...</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Penyelarasan Manual</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {r2SyncResult && (
+                    <div className="bg-white border border-stone-200 p-4 font-mono text-[11px] text-stone-800 space-y-2 rounded-none">
+                      <div className="flex justify-between border-b border-stone-100 pb-1.5">
+                        <span className="font-bold">STATUS SAMBUNGAN:</span>
+                        <span className="text-emerald-600 font-bold">TERHUBUNG (CONNECTED)</span>
+                      </div>
+                      <div className="flex justify-between border-b border-stone-100 pb-1.5">
+                        <span className="font-bold">TOTAL REGISTERED IN CLOUD R2:</span>
+                        <span className="font-bold text-black">{r2SyncResult.confirmationsSynced} REKOD</span>
+                      </div>
+                      <div className="flex justify-between border-b border-stone-100 pb-1.5">
+                        <span className="font-bold">TOTAL ROSTER SEEDED/SYNCED:</span>
+                        <span className="font-bold text-black">{r2SyncResult.membersSynced} AHLI</span>
+                      </div>
+                      <div className="text-[10px] text-stone-500 space-y-1 pt-1 break-words">
+                        <p><strong>PULL DETAILS:</strong> {r2SyncResult.pullDetails}</p>
+                        <p><strong>PUSH DETAILS:</strong> {r2SyncResult.pushDetails}</p>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {!r2SyncResult && (
+                    <div className="text-[10px] text-stone-400 font-mono italic">
+                      *Klik butang di atas untuk memulakan semakan status dan menyalin database serta confirmations ke Cloudflare R2 anda.
+                    </div>
+                  )}
                 </div>
 
                 {/* Search and Tabs Filter Controls Container */}
